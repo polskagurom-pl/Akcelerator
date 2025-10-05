@@ -1,0 +1,1318 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Play, Pause, RotateCcw, Video } from 'lucide-react';
+import * as THREE from 'three';
+
+const PhotonSimulator = () => {
+  const mountRef = useRef(null);
+  const sceneRef = useRef(null);
+  const rendererRef = useRef(null);
+  const cameraRef = useRef(null);
+  const sphereRef = useRef(null);
+  const photonsRef = useRef([]);
+  const animationRef = useRef(null);
+  const isDraggingRef = useRef(false);
+  const previousMouseRef = useRef({ x: 0, y: 0 });
+  const initialCameraPos = { x: 5, y: 2, z: 5 };
+  
+  const [isRunning, setIsRunning] = useState(false);
+  const [stats, setStats] = useState({
+    count: 0,
+    avgSpeed: 0,
+    collisions: 0,
+    energy: 0
+  });
+  
+  const [sources, setSources] = useState([
+    { position: 'center', count: 50, customX: 0, customY: 0, customZ: 0 }
+  ]);
+  const [numSources, setNumSources] = useState(1);
+  const [color, setColor] = useState('#ffffff');
+  const [simulationSpeed, setSimulationSpeed] = useState(100);
+  
+  const [visualMode, setVisualMode] = useState('normal');
+  const [showWireframe, setShowWireframe] = useState(false);
+  const [wrapMode, setWrapMode] = useState(false);
+  const [pauseOnCollision, setPauseOnCollision] = useState(false);
+  const [collisionLog, setCollisionLog] = useState([]);
+  const [showPhotons, setShowPhotons] = useState(true);
+  const [showCollisionFlash, setShowCollisionFlash] = useState(false);
+  const [showTrails, setShowTrails] = useState(false);
+  const [collisionFlashes, setCollisionFlashes] = useState([]);
+  const [collisionMonitorOpen, setCollisionMonitorOpen] = useState(true);
+  const [graphMonitorOpen, setGraphMonitorOpen] = useState(true);
+  const [graphType, setGraphType] = useState('2d');
+  const [graphAxisX, setGraphAxisX] = useState('time');
+  const [graphAxisY, setGraphAxisY] = useState('collisions');
+  const [graphAxisZ, setGraphAxisZ] = useState('energy');
+  const [graphLocked, setGraphLocked] = useState(false);
+  const [graphScale, setGraphScale] = useState({ minX: 0, maxX: 1, minY: 0, maxY: 1 });
+  const [graphData, setGraphData] = useState([]);
+  const timeRef = useRef(0);
+  const sphereRadius = 3;
+  const collisionCountRef = useRef(0);
+  const lightSpeed = 0.02;
+
+  const positions = {
+    'center': { x: 0, y: 0, z: 0 },
+    'front': { x: 0, y: 0, z: sphereRadius * 0.8 },
+    'back': { x: 0, y: 0, z: -sphereRadius * 0.8 },
+    'left': { x: -sphereRadius * 0.8, y: 0, z: 0 },
+    'right': { x: sphereRadius * 0.8, y: 0, z: 0 },
+    'top': { x: 0, y: sphereRadius * 0.8, z: 0 },
+    'bottom': { x: 0, y: -sphereRadius * 0.8, z: 0 }
+  };
+
+  useEffect(() => {
+    if (!mountRef.current) return;
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x000000);
+    sceneRef.current = scene;
+
+    const width = mountRef.current.clientWidth;
+    const height = mountRef.current.clientHeight;
+    
+    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+    camera.position.set(initialCameraPos.x, initialCameraPos.y, initialCameraPos.z);
+    camera.lookAt(0, 0, 0);
+    cameraRef.current = camera;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    mountRef.current.appendChild(renderer.domElement);
+    rendererRef.current = renderer;
+
+    const geometry = new THREE.SphereGeometry(sphereRadius, 32, 32);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide
+    });
+    const sphere = new THREE.Mesh(geometry, material);
+    scene.add(sphere);
+    sphereRef.current = sphere;
+
+    // Wireframe (siatka)
+    const wireframeGeometry = new THREE.SphereGeometry(sphereRadius, 32, 32);
+    const wireframeMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.15,
+      side: THREE.DoubleSide,
+      wireframe: true
+    });
+    const wireframeMesh = new THREE.Mesh(wireframeGeometry, wireframeMaterial);
+    wireframeMesh.visible = false;
+    sphere.add(wireframeMesh);
+    sphere.userData.wireframe = wireframeMesh;
+
+    // Okrąg równikowy
+    const circleGeometry = new THREE.BufferGeometry();
+    const circlePoints = [];
+    const segments = 64;
+    for (let i = 0; i <= segments; i++) {
+      const angle = (i / segments) * Math.PI * 2;
+      circlePoints.push(
+        Math.cos(angle) * sphereRadius,
+        0,
+        Math.sin(angle) * sphereRadius
+      );
+    }
+    circleGeometry.setAttribute('position', new THREE.Float32BufferAttribute(circlePoints, 3));
+    const circleMaterial = new THREE.LineBasicMaterial({ 
+      color: 0xffffff, 
+      opacity: 0.3, 
+      transparent: true,
+      depthTest: false
+    });
+    const circle = new THREE.Line(circleGeometry, circleMaterial);
+    sphere.add(circle);
+
+    // Krzyżyk na górnym biegunie
+    const crossSize = 0.15;
+    const crossMaterial = new THREE.LineBasicMaterial({ 
+      color: 0xffffff, 
+      opacity: 0.5, 
+      transparent: true,
+      depthTest: false
+    });
+    
+    const topCross1Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-crossSize, sphereRadius, 0),
+      new THREE.Vector3(crossSize, sphereRadius, 0)
+    ]);
+    const topCross1 = new THREE.Line(topCross1Geometry, crossMaterial);
+    sphere.add(topCross1);
+    
+    const topCross2Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, sphereRadius, -crossSize),
+      new THREE.Vector3(0, sphereRadius, crossSize)
+    ]);
+    const topCross2 = new THREE.Line(topCross2Geometry, crossMaterial);
+    sphere.add(topCross2);
+
+    // Krzyżyk na dolnym biegunie
+    const bottomCross1Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-crossSize, -sphereRadius, 0),
+      new THREE.Vector3(crossSize, -sphereRadius, 0)
+    ]);
+    const bottomCross1 = new THREE.Line(bottomCross1Geometry, crossMaterial);
+    sphere.add(bottomCross1);
+    
+    const bottomCross2Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, -sphereRadius, -crossSize),
+      new THREE.Vector3(0, -sphereRadius, crossSize)
+    ]);
+    const bottomCross2 = new THREE.Line(bottomCross2Geometry, crossMaterial);
+    sphere.add(bottomCross2);
+
+    // Krzyżyk 3D w centrum kuli
+    const centerCrossSize = 0.5;
+    const centerCrossMaterial = new THREE.LineBasicMaterial({ 
+      color: 0xff0000, 
+      opacity: 0.7, 
+      transparent: true,
+      depthTest: false,
+      linewidth: 2
+    });
+    
+    const centerCross1Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(-centerCrossSize, 0, 0),
+      new THREE.Vector3(centerCrossSize, 0, 0)
+    ]);
+    const centerCross1 = new THREE.Line(centerCross1Geometry, centerCrossMaterial);
+    sphere.add(centerCross1);
+    
+    const centerCross2Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, -centerCrossSize, 0),
+      new THREE.Vector3(0, centerCrossSize, 0)
+    ]);
+    const centerCross2 = new THREE.Line(centerCross2Geometry, centerCrossMaterial);
+    sphere.add(centerCross2);
+    
+    const centerCross3Geometry = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 0, -centerCrossSize),
+      new THREE.Vector3(0, 0, centerCrossSize)
+    ]);
+    const centerCross3 = new THREE.Line(centerCross3Geometry, centerCrossMaterial);
+    sphere.add(centerCross3);
+
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    const handleResize = () => {
+      const w = mountRef.current.clientWidth;
+      const h = mountRef.current.clientHeight;
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+
+    const handleMouseDown = (e) => {
+      isDraggingRef.current = true;
+      previousMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const handleMouseMove = (e) => {
+      if (!isDraggingRef.current) return;
+
+      const deltaX = e.clientX - previousMouseRef.current.x;
+      const deltaY = e.clientY - previousMouseRef.current.y;
+
+      const rotationSpeed = 0.005;
+      
+      camera.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), -deltaX * rotationSpeed);
+      
+      const right = new THREE.Vector3();
+      camera.getWorldDirection(new THREE.Vector3());
+      right.crossVectors(camera.up, new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0, 0, 0)).normalize());
+      camera.position.applyAxisAngle(right, -deltaY * rotationSpeed);
+      
+      camera.lookAt(0, 0, 0);
+
+      previousMouseRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const handleMouseUp = () => {
+      isDraggingRef.current = false;
+    };
+
+    const handleWheel = (e) => {
+      e.preventDefault();
+      
+      const zoomSpeed = 0.001;
+      const direction = new THREE.Vector3().subVectors(camera.position, new THREE.Vector3(0, 0, 0)).normalize();
+      const distance = camera.position.length();
+      
+      const delta = e.deltaY * zoomSpeed * distance;
+      const newDistance = distance + delta;
+      
+      if (newDistance > 4 && newDistance < 15) {
+        camera.position.add(direction.multiplyScalar(delta));
+      }
+    };
+
+    renderer.domElement.addEventListener('mousedown', handleMouseDown);
+    renderer.domElement.addEventListener('wheel', handleWheel, { passive: false });
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
+
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      renderer.domElement.removeEventListener('mousedown', handleMouseDown);
+      renderer.domElement.removeEventListener('wheel', handleWheel);
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      mountRef.current?.removeChild(renderer.domElement);
+      geometry.dispose();
+      material.dispose();
+      renderer.dispose();
+    };
+  }, []);
+
+  const initPhotons = () => {
+    photonsRef.current.forEach(p => {
+      sceneRef.current.remove(p.mesh);
+      p.geometry.dispose();
+      p.material.dispose();
+    });
+    
+    photonsRef.current = [];
+    collisionCountRef.current = 0;
+
+    sources.forEach(source => {
+      let startPos;
+      if (source.position === 'custom') {
+        startPos = { x: source.customX, y: source.customY, z: source.customZ };
+      } else {
+        startPos = positions[source.position];
+      }
+
+      for (let i = 0; i < source.count; i++) {
+        const theta = Math.random() * Math.PI * 2;
+        const phi = Math.random() * Math.PI;
+        
+        const geometry = new THREE.BufferGeometry();
+        const vertices = new Float32Array([0, 0, 0]);
+        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+        
+        const material = new THREE.PointsMaterial({ 
+          color: color,
+          size: 1,
+          sizeAttenuation: false
+        });
+        const mesh = new THREE.Points(geometry, material);
+        
+        mesh.position.set(startPos.x, startPos.y, startPos.z);
+        sceneRef.current.add(mesh);
+
+        // Ślad fotonu
+        const trailGeometry = new THREE.BufferGeometry();
+        const trailPositions = [];
+        trailGeometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(trailPositions), 3));
+        
+        const trailColors = [];
+        trailGeometry.setAttribute('color', new THREE.BufferAttribute(new Float32Array(trailColors), 3));
+        
+        const trailMaterial = new THREE.LineBasicMaterial({ 
+          vertexColors: true,
+          transparent: true,
+          opacity: 0.8,
+          linewidth: 1
+        });
+        const trailMesh = new THREE.Line(trailGeometry, trailMaterial);
+        sceneRef.current.add(trailMesh);
+
+        photonsRef.current.push({
+          mesh,
+          geometry,
+          material,
+          trailMesh,
+          trailGeometry,
+          trailMaterial,
+          trailPositions: [],
+          trailColors: [],
+          trailCounter: 0,
+          velocity: new THREE.Vector3(
+            Math.sin(phi) * Math.cos(theta) * lightSpeed,
+            Math.sin(phi) * Math.sin(theta) * lightSpeed,
+            Math.cos(phi) * lightSpeed
+          ),
+          mass: 0
+        });
+      }
+    });
+    
+    const totalPhotons = sources.reduce((sum, s) => sum + s.count, 0);
+    setStats(prev => ({ ...prev, count: totalPhotons, collisions: 0 }));
+  };
+
+  const checkSphereCollision = (photon) => {
+    const pos = photon.mesh.position;
+    const dist = pos.length();
+    
+    if (dist >= sphereRadius - 0.01) {
+      if (wrapMode) {
+        const normal = pos.clone().normalize();
+        pos.copy(normal.multiplyScalar(-(sphereRadius - 0.02)));
+      } else {
+        const normal = pos.clone().normalize();
+        const dotProduct = photon.velocity.dot(normal);
+        photon.velocity.sub(normal.multiplyScalar(2 * dotProduct));
+        
+        const overlap = dist - (sphereRadius - 0.01);
+        pos.sub(normal.multiplyScalar(overlap));
+      }
+      
+      return true;
+    }
+    return false;
+  };
+
+  const checkPhotonCollision = (p1, p2, index1, index2) => {
+    const pos1 = p1.mesh.position;
+    const pos2 = p2.mesh.position;
+    const dist = pos1.distanceTo(pos2);
+    
+    const collisionDist = 0.02;
+    
+    if (dist < collisionDist) {
+      const delta = new THREE.Vector3().subVectors(pos2, pos1);
+      const normal = delta.normalize();
+      
+      const relVel = new THREE.Vector3().subVectors(p2.velocity, p1.velocity);
+      const velAlongNormal = relVel.dot(normal);
+      
+      if (velAlongNormal < 0) {
+        const v1 = p1.velocity.clone();
+        const v2 = p2.velocity.clone();
+        
+        p1.velocity.copy(v2);
+        p2.velocity.copy(v1);
+        
+        const overlap = (collisionDist - dist) / 2;
+        pos1.sub(normal.clone().multiplyScalar(overlap));
+        pos2.add(normal.clone().multiplyScalar(overlap));
+        
+        // Logowanie kolizji
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = `[${timestamp}] PHOTON-PHOTON COLLISION: P${index1} <-> P${index2}`;
+        setCollisionLog(prev => [logEntry, ...prev.slice(0, 9)]);
+        
+        // Rozbłysk przy kolizji
+        if (showCollisionFlash) {
+          const flashPos = pos1.clone().add(pos2).multiplyScalar(0.5);
+          
+          // Wewnętrzna jasna kula
+          const innerGeometry = new THREE.SphereGeometry(0.08, 16, 16);
+          const innerMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffff00,
+            transparent: true,
+            opacity: 1
+          });
+          const innerFlash = new THREE.Mesh(innerGeometry, innerMaterial);
+          innerFlash.position.copy(flashPos);
+          sceneRef.current.add(innerFlash);
+          
+          // Zewnętrzna pomarańczowa kula
+          const middleGeometry = new THREE.SphereGeometry(0.12, 16, 16);
+          const middleMaterial = new THREE.MeshBasicMaterial({
+            color: 0xff8800,
+            transparent: true,
+            opacity: 0.7
+          });
+          const middleFlash = new THREE.Mesh(middleGeometry, middleMaterial);
+          middleFlash.position.copy(flashPos);
+          sceneRef.current.add(middleFlash);
+          
+          // Zewnętrzna czerwona kula
+          const outerGeometry = new THREE.SphereGeometry(0.18, 16, 16);
+          const outerMaterial = new THREE.MeshBasicMaterial({
+            color: 0xff4400,
+            transparent: true,
+            opacity: 0.4
+          });
+          const outerFlash = new THREE.Mesh(outerGeometry, outerMaterial);
+          outerFlash.position.copy(flashPos);
+          sceneRef.current.add(outerFlash);
+          
+          let opacity = 1;
+          const fadeInterval = setInterval(() => {
+            opacity -= 0.05;
+            innerMaterial.opacity = opacity;
+            middleMaterial.opacity = opacity * 0.7;
+            outerMaterial.opacity = opacity * 0.4;
+            
+            if (opacity <= 0) {
+              clearInterval(fadeInterval);
+              sceneRef.current.remove(innerFlash);
+              sceneRef.current.remove(middleFlash);
+              sceneRef.current.remove(outerFlash);
+              innerGeometry.dispose();
+              innerMaterial.dispose();
+              middleGeometry.dispose();
+              middleMaterial.dispose();
+              outerGeometry.dispose();
+              outerMaterial.dispose();
+            }
+          }, 100);
+        }
+        
+        if (pauseOnCollision) {
+          setIsRunning(false);
+        }
+        
+        return true;
+      }
+    }
+    return false;
+  };
+
+  const animate = () => {
+    if (isRunning) {
+      const speedMultiplier = simulationSpeed / 100;
+      let collisions = 0;
+      let totalSpeed = 0;
+      let totalEnergy = 0;
+
+      photonsRef.current.forEach((photon, i) => {
+        const adjustedVelocity = photon.velocity.clone().multiplyScalar(speedMultiplier);
+        photon.mesh.position.add(adjustedVelocity);
+        
+        // Aktualizacja śladu - co 3 klatki
+        if (showTrails) {
+          photon.trailCounter++;
+          if (photon.trailCounter % 3 === 0) {
+            photon.trailPositions.push(photon.mesh.position.x, photon.mesh.position.y, photon.mesh.position.z);
+            
+            // Dodaj kolor - gradient od białego do koloru fotonu
+            const colorObj = new THREE.Color(color);
+            const progress = Math.min(photon.trailPositions.length / 300, 1);
+            photon.trailColors.push(colorObj.r * progress, colorObj.g * progress, colorObj.b * progress);
+            
+            if (photon.trailPositions.length > 150) { // 50 punktów x 3 współrzędne
+              photon.trailPositions.splice(0, 3);
+              photon.trailColors.splice(0, 3);
+            }
+            
+            const newPositions = new Float32Array(photon.trailPositions);
+            const newColors = new Float32Array(photon.trailColors);
+            photon.trailGeometry.setAttribute('position', new THREE.BufferAttribute(newPositions, 3));
+            photon.trailGeometry.setAttribute('color', new THREE.BufferAttribute(newColors, 3));
+            photon.trailGeometry.attributes.position.needsUpdate = true;
+            photon.trailGeometry.attributes.color.needsUpdate = true;
+          }
+          photon.trailMesh.visible = true;
+        } else {
+          photon.trailMesh.visible = false;
+        }
+        
+        // Widoczność fotonu
+        photon.mesh.visible = showPhotons;
+        
+        if (checkSphereCollision(photon)) {
+          collisions++;
+        }
+
+        for (let j = i + 1; j < photonsRef.current.length; j++) {
+          if (checkPhotonCollision(photon, photonsRef.current[j], i, j)) {
+            collisions++;
+          }
+        }
+
+        const speed = photon.velocity.length();
+        totalSpeed += speed;
+        totalEnergy += 0.5 * photon.mass * speed * speed;
+
+        if (visualMode === 'energy') {
+          const energy = 0.5 * photon.mass * speed * speed;
+          const hue = Math.min(energy * 5000, 1);
+          photon.material.color.setHSL(hue, 1, 0.5);
+        }
+      });
+
+      collisionCountRef.current += collisions;
+
+      const currentStats = {
+        count: photonsRef.current.length,
+        avgSpeed: (totalSpeed / photonsRef.current.length * 100).toFixed(2),
+        collisions: collisionCountRef.current,
+        energy: (totalEnergy * 1000).toFixed(2)
+      };
+
+      setStats(currentStats);
+      
+      // Aktualizacja danych wykresu
+      timeRef.current += 0.1;
+      const newDataPoint = {
+        time: timeRef.current.toFixed(1),
+        collisions: collisionCountRef.current,
+        energy: parseFloat(currentStats.energy),
+        avgSpeed: parseFloat(currentStats.avgSpeed),
+        count: currentStats.count
+      };
+      
+      setGraphData(prev => {
+        const newData = [...prev, newDataPoint];
+        const trimmedData = newData.slice(-100); // Ostatnie 100 punktów
+        
+        // Aktualizacja skali jeśli wykres nie jest zablokowany
+        if (!graphLocked && trimmedData.length > 0) {
+          const maxX = Math.max(...trimmedData.map(d => parseFloat(d[graphAxisX]) || 0));
+          const minX = Math.min(...trimmedData.map(d => parseFloat(d[graphAxisX]) || 0));
+          const maxY = Math.max(...trimmedData.map(d => parseFloat(d[graphAxisY]) || 0));
+          const minY = Math.min(...trimmedData.map(d => parseFloat(d[graphAxisY]) || 0));
+          
+          setGraphScale({ 
+            minX: minX, 
+            maxX: maxX === minX ? minX + 1 : maxX, 
+            minY: minY, 
+            maxY: maxY === minY ? minY + 1 : maxY 
+          });
+        }
+        
+        return trimmedData;
+      });
+
+      sphereRef.current.rotation.y += 0.001;
+    } else {
+      // W pauzie też aktualizuj widoczność
+      photonsRef.current.forEach(photon => {
+        photon.mesh.visible = showPhotons;
+        photon.trailMesh.visible = showTrails;
+      });
+    }
+
+    rendererRef.current.render(sceneRef.current, cameraRef.current);
+    animationRef.current = requestAnimationFrame(animate);
+  };
+
+  useEffect(() => {
+    if (sphereRef.current && sphereRef.current.userData.wireframe) {
+      sphereRef.current.userData.wireframe.visible = showWireframe;
+    }
+  }, [showWireframe]);
+
+  useEffect(() => {
+    // Aktualizacja widoczności fotonów
+    photonsRef.current.forEach(photon => {
+      photon.mesh.visible = showPhotons;
+    });
+  }, [showPhotons]);
+
+  useEffect(() => {
+    // Inicjalizacja skali przy zmianie osi
+    if (graphData.length > 0) {
+      const maxX = Math.max(...graphData.map(d => parseFloat(d[graphAxisX]) || 0));
+      const minX = Math.min(...graphData.map(d => parseFloat(d[graphAxisX]) || 0));
+      const maxY = Math.max(...graphData.map(d => parseFloat(d[graphAxisY]) || 0));
+      const minY = Math.min(...graphData.map(d => parseFloat(d[graphAxisY]) || 0));
+      setGraphScale({ 
+        minX, 
+        maxX: maxX === minX ? minX + 1 : maxX, 
+        minY, 
+        maxY: maxY === minY ? minY + 1 : maxY 
+      });
+    }
+  }, [graphAxisX, graphAxisY]);
+
+  useEffect(() => {
+    animate();
+    
+    return () => {
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, [isRunning, visualMode, simulationSpeed, showPhotons, showTrails]);
+
+  const handleStart = () => {
+    if (photonsRef.current.length === 0) {
+      initPhotons();
+    }
+    setIsRunning(true);
+  };
+
+  const handleStop = () => {
+    setIsRunning(false);
+  };
+
+  const handleReset = () => {
+    setIsRunning(false);
+    photonsRef.current.forEach(p => {
+      sceneRef.current.remove(p.mesh);
+      sceneRef.current.remove(p.trailMesh);
+      p.geometry.dispose();
+      p.material.dispose();
+      p.trailGeometry.dispose();
+      p.trailMaterial.dispose();
+    });
+    photonsRef.current = [];
+    collisionCountRef.current = 0;
+    timeRef.current = 0;
+    setCollisionLog([]);
+    setCollisionFlashes([]);
+    setGraphData([]);
+    setGraphScale({ minX: 0, maxX: 1, minY: 0, maxY: 1 });
+    setGraphLocked(false);
+    setStats({ count: 0, avgSpeed: 0, collisions: 0, energy: 0 });
+  };
+
+  const handleResetCamera = () => {
+    if (cameraRef.current) {
+      cameraRef.current.position.set(initialCameraPos.x, initialCameraPos.y, initialCameraPos.z);
+      cameraRef.current.lookAt(0, 0, 0);
+    }
+  };
+
+  const updateNumSources = (num) => {
+    setNumSources(num);
+    const newSources = [];
+    for (let i = 0; i < num; i++) {
+      if (sources[i]) {
+        newSources.push(sources[i]);
+      } else {
+        newSources.push({ position: 'center', count: 50, customX: 0, customY: 0, customZ: 0 });
+      }
+    }
+    setSources(newSources);
+  };
+
+  const getAxisLabel = (axis) => {
+    const labels = {
+      time: 'Czas',
+      collisions: 'Kolizje',
+      energy: 'Energia',
+      avgSpeed: 'Śr. Prędkość',
+      count: 'Liczba fotonów'
+    };
+    return labels[axis] || axis;
+  };
+
+  const renderGraph2D = () => {
+    if (graphData.length === 0) return null;
+
+    const { minX, maxX, minY, maxY } = graphScale;
+    
+    const width = 360;
+    const height = 180;
+    const padding = 30;
+    
+    const rangeX = maxX - minX || 1;
+    const rangeY = maxY - minY || 1;
+    
+    const points = graphData.map((d) => {
+      const valX = parseFloat(d[graphAxisX]) || 0;
+      const valY = parseFloat(d[graphAxisY]) || 0;
+      const x = padding + ((valX - minX) / rangeX) * (width - padding * 2);
+      const y = height - padding - ((valY - minY) / rangeY) * (height - padding * 2);
+      return `${x},${y}`;
+    }).join(' ');
+
+    return (
+      <svg width={width} height={height} className="bg-black">
+        {/* Osie */}
+        <line 
+          x1={padding} y1={padding} 
+          x2={padding} y2={height - padding} 
+          stroke="#00ff00" 
+          strokeWidth="1"
+          opacity="0.5"
+        />
+        <line 
+          x1={padding} y1={height - padding} 
+          x2={width - padding} y2={height - padding} 
+          stroke="#00ff00" 
+          strokeWidth="1"
+          opacity="0.5"
+        />
+        
+        {/* Etykiety osi */}
+        <text 
+          x={width / 2} 
+          y={height - 5} 
+          fill="#00ff00" 
+          fontSize="9" 
+          textAnchor="middle"
+          style={{ fontFamily: 'Courier New, monospace', textShadow: '0 0 5px rgba(0, 255, 0, 0.8)' }}
+        >
+          {getAxisLabel(graphAxisX)}
+        </text>
+        <text 
+          x="5" 
+          y={height / 2} 
+          fill="#00ff00" 
+          fontSize="9" 
+          textAnchor="middle"
+          transform={`rotate(-90, 5, ${height / 2})`}
+          style={{ fontFamily: 'Courier New, monospace', textShadow: '0 0 5px rgba(0, 255, 0, 0.8)' }}
+        >
+          {getAxisLabel(graphAxisY)}
+        </text>
+        
+        {/* Wartości min/max */}
+        <text 
+          x={padding - 5} 
+          y={height - padding + 3} 
+          fill="#00ff00" 
+          fontSize="8" 
+          textAnchor="end"
+          style={{ fontFamily: 'Courier New, monospace' }}
+        >
+          {minY.toFixed(1)}
+        </text>
+        <text 
+          x={padding - 5} 
+          y={padding + 3} 
+          fill="#00ff00" 
+          fontSize="8" 
+          textAnchor="end"
+          style={{ fontFamily: 'Courier New, monospace' }}
+        >
+          {maxY.toFixed(1)}
+        </text>
+        <text 
+          x={padding} 
+          y={height - padding + 15} 
+          fill="#00ff00" 
+          fontSize="8" 
+          textAnchor="start"
+          style={{ fontFamily: 'Courier New, monospace' }}
+        >
+          {minX.toFixed(1)}
+        </text>
+        <text 
+          x={width - padding} 
+          y={height - padding + 15} 
+          fill="#00ff00" 
+          fontSize="8" 
+          textAnchor="end"
+          style={{ fontFamily: 'Courier New, monospace' }}
+        >
+          {maxX.toFixed(1)}
+        </text>
+        
+        {        /* Wykres */}
+        {points && (
+          <polyline
+            points={points}
+            fill="none"
+            stroke="#00ff00"
+            strokeWidth="2"
+            style={{ filter: 'drop-shadow(0 0 4px rgba(0, 255, 0, 0.8))' }}
+          />
+        )}
+        
+        {/* Punkty danych */}
+        {graphData.map((d, i) => {
+          const valX = parseFloat(d[graphAxisX]) || 0;
+          const valY = parseFloat(d[graphAxisY]) || 0;
+          const x = padding + ((valX - minX) / rangeX) * (width - padding * 2);
+          const y = height - padding - ((valY - minY) / rangeY) * (height - padding * 2);
+          return (
+            <circle
+              key={i}
+              cx={x}
+              cy={y}
+              r="1.5"
+              fill="#00ff00"
+              opacity={0.6}
+            />
+          );
+        })}
+        
+        {/* Aktualna wartość */}
+        <text 
+          x={width - 5} 
+          y={15} 
+          fill="#00ff00" 
+          fontSize="10" 
+          textAnchor="end"
+          style={{ fontFamily: 'Courier New, monospace', textShadow: '0 0 5px rgba(0, 255, 0, 0.8)' }}
+        >
+          Y: {graphData[graphData.length - 1]?.[graphAxisY]?.toFixed?.(2) || 0}
+        </text>
+        
+        {/* Debug info */}
+        <text 
+          x="5" 
+          y="25" 
+          fill="#00ff00" 
+          fontSize="8" 
+          style={{ fontFamily: 'Courier New, monospace' }}
+        >
+          Points: {graphData.length} | Scale: {graphLocked ? 'LOCKED' : 'AUTO'}
+        </text>
+      </svg>
+    );
+  };
+
+  const renderGraph3D = () => {
+    if (graphData.length === 0) return null;
+
+    return (
+      <div className="bg-black h-48 flex items-center justify-center text-green-400 text-xs font-mono">
+        <div className="text-center">
+          <div>Wykres 3D</div>
+          <div className="mt-2 opacity-70">X: {getAxisLabel(graphAxisX)}</div>
+          <div className="opacity-70">Y: {getAxisLabel(graphAxisY)}</div>
+          <div className="opacity-70">Z: {getAxisLabel(graphAxisZ)}</div>
+          <div className="mt-2">Punkty: {graphData.length}</div>
+        </div>
+      </div>
+    );
+  };
+
+  const updateSource = (index, field, value) => {
+    const newSources = [...sources];
+    newSources[index][field] = value;
+    setSources(newSources);
+  };
+
+  return (
+    <div className="w-full h-screen bg-black flex">
+      <div className="w-80 h-full bg-gray-900 bg-opacity-90 p-6 overflow-y-auto">
+        <h1 className="text-2xl font-bold text-white mb-6">Symulator Fotoniczny</h1>
+        
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-white mb-4">Sterowanie</h2>
+          <div className="flex gap-2 mb-4">
+            {!isRunning ? (
+              <button
+                onClick={handleStart}
+                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                <Play size={20} /> Start
+              </button>
+            ) : (
+              <button
+                onClick={handleStop}
+                className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700"
+              >
+                <Pause size={20} /> Stop
+              </button>
+            )}
+            <button
+              onClick={handleReset}
+              className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700"
+            >
+              <RotateCcw size={20} /> Reset
+            </button>
+          </div>
+          <button
+            onClick={handleResetCamera}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 w-full"
+          >
+            <Video size={20} /> Reset kamery
+          </button>
+        </div>
+        
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-white mb-4">Źródła fotonów</h2>
+          
+          <div className="mb-4">
+            <label className="text-white text-sm mb-1 block">Liczba źródeł: {numSources}</label>
+            <input
+              type="range"
+              min="1"
+              max="7"
+              value={numSources}
+              onChange={(e) => updateNumSources(parseInt(e.target.value))}
+              className="w-full"
+              disabled={isRunning}
+            />
+          </div>
+
+          {sources.map((source, index) => (
+            <div key={index} className="mb-4 p-3 bg-gray-800 rounded">
+              <h3 className="text-white text-sm font-semibold mb-2">Źródło {index + 1}</h3>
+              
+              <div className="mb-2">
+                <label className="text-white text-xs mb-1 block">Pozycja</label>
+                <select
+                  value={source.position}
+                  onChange={(e) => updateSource(index, 'position', e.target.value)}
+                  className="w-full p-1 text-xs rounded bg-gray-700 text-white"
+                  disabled={isRunning}
+                >
+                  <option value="center">Środek</option>
+                  <option value="front">Przód</option>
+                  <option value="back">Tył</option>
+                  <option value="left">Lewo</option>
+                  <option value="right">Prawo</option>
+                  <option value="top">Góra</option>
+                  <option value="bottom">Dół</option>
+                  <option value="custom">Własna</option>
+                </select>
+              </div>
+
+              {source.position === 'custom' && (
+                <div className="mb-2 space-y-1">
+                  <input
+                    type="number"
+                    placeholder="X"
+                    step="0.1"
+                    value={source.customX}
+                    onChange={(e) => updateSource(index, 'customX', parseFloat(e.target.value) || 0)}
+                    className="w-full p-1 text-xs rounded bg-gray-700 text-white"
+                    disabled={isRunning}
+                  />
+                  <input
+                    type="number"
+                    placeholder="Y"
+                    step="0.1"
+                    value={source.customY}
+                    onChange={(e) => updateSource(index, 'customY', parseFloat(e.target.value) || 0)}
+                    className="w-full p-1 text-xs rounded bg-gray-700 text-white"
+                    disabled={isRunning}
+                  />
+                  <input
+                    type="number"
+                    placeholder="Z"
+                    step="0.1"
+                    value={source.customZ}
+                    onChange={(e) => updateSource(index, 'customZ', parseFloat(e.target.value) || 0)}
+                    className="w-full p-1 text-xs rounded bg-gray-700 text-white"
+                    disabled={isRunning}
+                  />
+                </div>
+              )}
+
+              <div className="mb-2">
+                <label className="text-white text-xs mb-1 block">Liczba fotonów: {source.count}</label>
+                <input
+                  type="range"
+                  min="1"
+                  max="100"
+                  value={source.count}
+                  onChange={(e) => updateSource(index, 'count', parseInt(e.target.value))}
+                  className="w-full"
+                  disabled={isRunning}
+                />
+              </div>
+            </div>
+          ))}
+
+          <div className="mb-4">
+            <label className="text-white text-sm mb-1 block">Kolor fotonów</label>
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-full h-10"
+              disabled={isRunning}
+            />
+          </div>
+        </div>
+        
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-white mb-4">Prędkość symulacji</h2>
+          <div className="mb-4">
+            <label className="text-white text-sm mb-1 block">Prędkość: {simulationSpeed}%</label>
+            <input
+              type="range"
+              min="0"
+              max="300"
+              step="10"
+              value={simulationSpeed}
+              onChange={(e) => setSimulationSpeed(parseInt(e.target.value))}
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        <div className="mb-8">
+          <h2 className="text-lg font-semibold text-white mb-4">Tryb wizualizacji</h2>
+          <select
+            value={visualMode}
+            onChange={(e) => setVisualMode(e.target.value)}
+            className="w-full p-2 rounded bg-gray-700 text-white mb-4"
+          >
+            <option value="normal">Normal</option>
+            <option value="energy">Energia</option>
+          </select>
+          
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="wireframe"
+              checked={showWireframe}
+              onChange={(e) => setShowWireframe(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="wireframe" className="text-white text-sm">
+              Pokaż siatkę kuli
+            </label>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="wrapmode"
+              checked={wrapMode}
+              onChange={(e) => setWrapMode(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="wrapmode" className="text-white text-sm">
+              Tryb przenikania (wrap)
+            </label>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="pauseoncollision"
+              checked={pauseOnCollision}
+              onChange={(e) => setPauseOnCollision(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="pauseoncollision" className="text-white text-sm">
+              Pauza przy kolizji foton-foton
+            </label>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="showphotons"
+              checked={showPhotons}
+              onChange={(e) => setShowPhotons(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="showphotons" className="text-white text-sm">
+              Pokaż fotony
+            </label>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="showflash"
+              checked={showCollisionFlash}
+              onChange={(e) => setShowCollisionFlash(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="showflash" className="text-white text-sm">
+              Rozbłysk przy kolizji
+            </label>
+          </div>
+          
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="checkbox"
+              id="showtrails"
+              checked={showTrails}
+              onChange={(e) => setShowTrails(e.target.checked)}
+              className="w-4 h-4"
+            />
+            <label htmlFor="showtrails" className="text-white text-sm">
+              Pokaż ślady fotonów
+            </label>
+          </div>
+        </div>
+      </div>
+      
+      <div ref={mountRef} className="flex-1 h-full cursor-grab active:cursor-grabbing relative">
+        {/* Monitor CRT - Kolizje */}
+        <div className={`absolute top-4 right-4 w-96 bg-black border-8 border-gray-700 rounded-lg shadow-2xl transition-all duration-300 ${!collisionMonitorOpen ? 'h-12' : ''}`} style={{
+          boxShadow: '0 0 20px rgba(0, 255, 0, 0.3), inset 0 0 30px rgba(0, 0, 0, 0.8)'
+        }}>
+          <div 
+            className="bg-gradient-to-b from-gray-800 to-gray-900 px-3 py-1 border-b-2 border-gray-600 cursor-pointer flex justify-between items-center"
+            onClick={() => setCollisionMonitorOpen(!collisionMonitorOpen)}
+          >
+            <div className="text-green-400 text-xs font-mono" style={{
+              textShadow: '0 0 5px rgba(0, 255, 0, 0.7)'
+            }}>
+              ═══ COLLISION MONITOR ═══
+            </div>
+            <div className="text-green-400 text-xs">
+              {collisionMonitorOpen ? '▼' : '▲'}
+            </div>
+          </div>
+          {collisionMonitorOpen && (
+            <>
+              <div className="bg-black p-3 h-64 overflow-hidden relative" style={{
+                background: 'radial-gradient(ellipse at center, #001a00 0%, #000000 100%)'
+              }}>
+                <div className="absolute inset-0 opacity-10" style={{
+                  background: 'repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0, 255, 0, 0.1) 2px, rgba(0, 255, 0, 0.1) 4px)'
+                }}></div>
+                <div className="relative z-10 space-y-1 font-mono text-xs">
+                  {collisionLog.length === 0 ? (
+                    <div className="text-green-500 opacity-50 text-[9px]" style={{
+                      textShadow: '0 0 8px rgba(0, 255, 0, 0.8)',
+                      fontFamily: 'Courier New, monospace'
+                    }}>
+                      &gt; WAITING FOR COLLISION DATA...
+                    </div>
+                  ) : (
+                    collisionLog.map((log, index) => (
+                      <div 
+                        key={index} 
+                        className="text-green-400 leading-tight text-[9px]"
+                        style={{
+                          textShadow: '0 0 8px rgba(0, 255, 0, 0.8)',
+                          fontFamily: 'Courier New, monospace',
+                          opacity: 1 - (index * 0.1)
+                        }}
+                      >
+                        &gt; {log}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+              <div className="bg-gradient-to-t from-gray-800 to-gray-900 px-3 py-1 border-t-2 border-gray-600">
+                <div className="text-green-400 text-xs font-mono text-right opacity-70" style={{
+                  textShadow: '0 0 5px rgba(0, 255, 0, 0.7)'
+                }}>
+                  [{collisionLog.length}/10 ENTRIES]
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Monitor CRT - Wykresy */}
+        <div className={`absolute top-4 left-4 w-96 bg-black border-8 border-gray-700 rounded-lg shadow-2xl transition-all duration-300 ${!graphMonitorOpen ? 'h-12' : ''}`} style={{
+          boxShadow: '0 0 20px rgba(0, 255, 0, 0.3), inset 0 0 30px rgba(0, 0, 0, 0.8)'
+        }}>
+          <div 
+            className="bg-gradient-to-b from-gray-800 to-gray-900 px-3 py-1 border-b-2 border-gray-600 cursor-pointer flex justify-between items-center"
+            onClick={() => setGraphMonitorOpen(!graphMonitorOpen)}
+          >
+            <div className="text-green-400 text-xs font-mono" style={{
+              textShadow: '0 0 5px rgba(0, 255, 0, 0.7)'
+            }}>
+              ═══ GRAPH MONITOR ═══
+            </div>
+            <div className="text-green-400 text-xs">
+              {graphMonitorOpen ? '▼' : '▲'}
+            </div>
+          </div>
+          {graphMonitorOpen && (
+            <>
+              <div className="bg-black p-3 relative" style={{
+                background: 'radial-gradient(ellipse at center, #001a00 0%, #000000 100%)'
+              }}>
+                <div className="mb-3 space-y-2">
+                  <div className="flex gap-2 items-center">
+                    <label className="text-green-400 text-[9px] font-mono w-16">Typ:</label>
+                    <select
+                      value={graphType}
+                      onChange={(e) => setGraphType(e.target.value)}
+                      className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                    >
+                      <option value="2d">2D</option>
+                      <option value="3d">3D</option>
+                    </select>
+                  </div>
+                  
+                  <div className="flex gap-2 items-center">
+                    <input
+                      type="checkbox"
+                      id="graphlock"
+                      checked={graphLocked}
+                      onChange={(e) => setGraphLocked(e.target.checked)}
+                      className="w-3 h-3"
+                    />
+                    <label htmlFor="graphlock" className="text-green-400 text-[9px] font-mono">
+                      Zablokuj skalę
+                    </label>
+                  </div>
+                  
+                  {graphType === '2d' ? (
+                    <>
+                      <div className="flex gap-2 items-center">
+                        <label className="text-green-400 text-[9px] font-mono w-16">Oś X:</label>
+                        <select
+                          value={graphAxisX}
+                          onChange={(e) => setGraphAxisX(e.target.value)}
+                          className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                        >
+                          <option value="time">Czas</option>
+                          <option value="collisions">Kolizje</option>
+                          <option value="energy">Energia</option>
+                          <option value="avgSpeed">Śr. Prędkość</option>
+                          <option value="count">Liczba fotonów</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <label className="text-green-400 text-[9px] font-mono w-16">Oś Y:</label>
+                        <select
+                          value={graphAxisY}
+                          onChange={(e) => setGraphAxisY(e.target.value)}
+                          className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                        >
+                          <option value="time">Czas</option>
+                          <option value="collisions">Kolizje</option>
+                          <option value="energy">Energia</option>
+                          <option value="avgSpeed">Śr. Prędkość</option>
+                          <option value="count">Liczba fotonów</option>
+                        </select>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="flex gap-2 items-center">
+                        <label className="text-green-400 text-[9px] font-mono w-16">Oś X:</label>
+                        <select
+                          value={graphAxisX}
+                          onChange={(e) => setGraphAxisX(e.target.value)}
+                          className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                        >
+                          <option value="time">Czas</option>
+                          <option value="collisions">Kolizje</option>
+                          <option value="energy">Energia</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <label className="text-green-400 text-[9px] font-mono w-16">Oś Y:</label>
+                        <select
+                          value={graphAxisY}
+                          onChange={(e) => setGraphAxisY(e.target.value)}
+                          className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                        >
+                          <option value="collisions">Kolizje</option>
+                          <option value="energy">Energia</option>
+                          <option value="avgSpeed">Śr. Prędkość</option>
+                        </select>
+                      </div>
+                      <div className="flex gap-2 items-center">
+                        <label className="text-green-400 text-[9px] font-mono w-16">Oś Z:</label>
+                        <select
+                          value={graphAxisZ}
+                          onChange={(e) => setGraphAxisZ(e.target.value)}
+                          className="bg-gray-800 text-green-400 text-[9px] font-mono p-1 flex-1 border border-green-700"
+                        >
+                          <option value="energy">Energia</option>
+                          <option value="collisions">Kolizje</option>
+                          <option value="avgSpeed">Śr. Prędkość</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
+                </div>
+                
+                {graphType === '2d' ? renderGraph2D() : renderGraph3D()}
+              </div>
+              <div className="bg-gradient-to-t from-gray-800 to-gray-900 px-3 py-1 border-t-2 border-gray-600">
+                <div className="text-green-400 text-xs font-mono text-right opacity-70" style={{
+                  textShadow: '0 0 5px rgba(0, 255, 0, 0.7)'
+                }}>
+                  [DATA POINTS: {graphData.length}]
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default PhotonSimulator;
